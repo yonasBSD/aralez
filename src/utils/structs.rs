@@ -119,7 +119,7 @@ pub struct AppConfig {
     pub proxy_port_tls: Option<String>,
     pub proxy_port: Option<String>,
     pub local_server: Option<(String, u16)>,
-    pub proxy_certificates: Option<String>,
+    pub proxy_configs: Option<String>,
     pub proxy_tls_grade: Option<String>,
     pub file_server_address: Option<String>,
     pub file_server_folder: Option<String>,

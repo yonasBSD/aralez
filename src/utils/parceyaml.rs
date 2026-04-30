@@ -7,8 +7,10 @@ use log::{error, info, warn};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::{env, fs};
+
+pub static DOMAINS: LazyLock<DashMap<String, bool>> = LazyLock::new(|| DashMap::new());
 
 pub async fn load_configuration(d: &str, kind: &str) -> (Option<Configuration>, String) {
     let mut conf_files = Vec::new();
@@ -16,7 +18,24 @@ pub async fn load_configuration(d: &str, kind: &str) -> (Option<Configuration>, 
         "filepath" => match fs::read_to_string(d) {
             Ok(data) => {
                 let mut confdir = Path::new(d).parent().unwrap().to_path_buf();
+                let mut autocfg = Path::new(d).parent().unwrap().to_path_buf();
+
+                autocfg.push("autoconfigs");
+                if !fs::metadata(autocfg.clone()).is_ok() {
+                    fs::create_dir_all(autocfg.clone()).ok();
+                }
+                autocfg.push("domains.json");
+                if autocfg.exists() {
+                    let json: Option<Vec<String>> = fs::read_to_string(autocfg).ok().and_then(|s| serde_json::from_str(&s).ok());
+                    if let Some(domains) = json {
+                        for domain in domains {
+                            DOMAINS.insert(domain, true);
+                        }
+                    }
+                }
+
                 confdir.push("conf.d");
+
                 if let Ok(entries) = fs::read_dir(&confdir) {
                     let mut paths: Vec<_> = entries
                         .flatten()

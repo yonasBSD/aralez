@@ -1,3 +1,4 @@
+use crate::tls::acme::order::refresh_order;
 use crate::utils::discovery::{APIUpstreamProvider, ConsulProvider, Discovery, FromFileProvider, KubernetesProvider};
 use crate::utils::parceyaml::load_configuration;
 use crate::utils::structs::Configuration;
@@ -50,10 +51,16 @@ impl BackgroundService for LB {
             }
         }
 
+        let confdir = self.config.proxy_configs.clone().unwrap_or_else(|| "/tmp".to_string()) + "/autoconfigs";
+        let certdir = self.config.proxy_configs.clone().unwrap_or_else(|| "/tmp".to_string()) + "/certificates";
+
         let api_load = APIUpstreamProvider {
             address: self.config.config_address.clone(),
             masterkey: self.config.master_key.clone(),
             config_api_enabled: self.config.config_api_enabled.clone(),
+            // certs_dir: self.config.proxy_certificates.clone().unwrap_or_else(|| "/tmp".to_string()),
+            config_dir: confdir.clone(),
+            certs_dir: certdir.clone(),
             // tls_address: self.config.config_tls_address.clone(),
             // tls_certificate: self.config.config_tls_certificate.clone(),
             // tls_key_file: self.config.config_tls_key_file.clone(),
@@ -62,6 +69,7 @@ impl BackgroundService for LB {
             current_upstreams: self.ump_upst.clone(),
             full_upstreams: self.ump_full.clone(),
         };
+        // let crtdir = api_load.certs_dir.clone();
         // let tx_api = tx.clone();
         let _ = tokio::spawn(async move { api_load.start(tx_api).await });
 
@@ -70,6 +78,7 @@ impl BackgroundService for LB {
         let im = self.ump_byid.clone();
         let (hc_method, hc_interval) = (self.config.hc_method.clone(), self.config.hc_interval);
         let _ = tokio::spawn(async move { healthcheck::hc2(uu, ff, im, (&*hc_method.to_string(), hc_interval.to_string().parse().unwrap())).await });
+        let _ = tokio::spawn(async move { refresh_order(certdir, confdir).await });
 
         loop {
             tokio::select! {

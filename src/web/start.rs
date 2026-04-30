@@ -64,7 +64,8 @@ pub fn run() {
         Some(bind_address_tls) => {
             check_priv(bind_address_tls.as_str());
             let (tx, rx): (Sender<Vec<CertificateConfig>>, Receiver<Vec<CertificateConfig>>) = channel();
-            let certs_path = cfg.proxy_certificates.clone().unwrap();
+            // let certs_path = cfg.proxy_certificates.clone().unwrap();
+            let certs_path = cfg.proxy_configs.clone().unwrap() + "/certificates";
             thread::spawn(move || {
                 watch_folder(certs_path, tx).unwrap();
             });

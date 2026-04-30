@@ -17,14 +17,14 @@ pub struct CertificateConfig {
 }
 
 #[derive(Debug)]
-struct CertificateInfo {
-    common_names: Vec<String>,
-    alt_names: Vec<String>,
-    ssl_context: SslContext,
+pub struct CertificateInfo {
+    pub common_names: Vec<String>,
+    pub alt_names: Vec<String>,
+    pub ssl_context: SslContext,
     #[allow(dead_code)]
-    cert_path: String, // Only used for logging
+    pub cert_path: String, // Only used for logging
     #[allow(dead_code)]
-    key_path: String, // Only used for logging
+    pub key_path: String, // Only used for logging
 }
 
 #[derive(Debug)]
@@ -105,7 +105,7 @@ impl Certificates {
     }
 }
 
-fn load_cert_info(cert_path: &str, key_path: &str, _grade: &str) -> Option<CertificateInfo> {
+pub fn load_cert_info(cert_path: &str, key_path: &str, _grade: &str) -> Option<CertificateInfo> {
     let mut common_names = HashSet::new();
     let mut alt_names = HashSet::new();
 

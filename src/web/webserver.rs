@@ -1,5 +1,8 @@
-use crate::utils::discovery::APIUpstreamProvider;
 // use std::net::SocketAddr;
+use crate::tls::acme::order::CHALLENGES;
+// use axum_server::tls_openssl::OpenSSLConfig;
+use crate::tls::acme::{account, order};
+use crate::utils::discovery::APIUpstreamProvider;
 use crate::utils::jwt::Claims;
 use crate::utils::structs::{Config, Configuration, UpstreamsDashMap};
 use crate::utils::tools::{upstreams_liveness_json, upstreams_to_json};
@@ -7,9 +10,8 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{header::HeaderMap, Response, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
-// use axum_server::tls_openssl::OpenSSLConfig;
 use futures::channel::mpsc::Sender;
 use futures::SinkExt;
 use jsonwebtoken::{encode, EncodingKey, Header};
@@ -31,6 +33,8 @@ struct OutToken {
 #[derive(Clone)]
 struct AppState {
     master_key: String,
+    cert_creds: String,
+    certs_dir: String,
     config_sender: Sender<Configuration>,
     config_api_enabled: bool,
     current_upstreams: Arc<UpstreamsDashMap>,
@@ -39,8 +43,11 @@ struct AppState {
 
 #[allow(unused_mut)]
 pub async fn run_server(config: &APIUpstreamProvider, mut to_return: Sender<Configuration>, upstreams_curr: Arc<UpstreamsDashMap>, upstreams_full: Arc<UpstreamsDashMap>) {
+    let credsfile = config.config_dir.clone() + "/acme_credentials.json";
     let app_state = AppState {
         master_key: config.masterkey.clone(),
+        cert_creds: credsfile,
+        certs_dir: config.certs_dir.clone(),
         config_sender: to_return.clone(),
         config_api_enabled: config.config_api_enabled.clone(),
         current_upstreams: upstreams_curr,
@@ -54,6 +61,9 @@ pub async fn run_server(config: &APIUpstreamProvider, mut to_return: Sender<Conf
         // .route("/{*wildcard}", delete(senderror))
         // .nest_service("/static", static_files)
         .route("/jwt", post(jwt_gen))
+        .route("/acme_create", any(acme_create))
+        .route("/acme_order/{*domain}", any(acme_order))
+        .route("/.well-known/acme-challenge/{*token}", any(http01_challenge))
         .route("/conf", post(conf))
         .route("/metrics", get(metrics))
         .route("/status", get(status))
@@ -87,19 +97,18 @@ async fn conf(State(st): State<AppState>, Query(params): Query<HashMap<String, S
     if !st.config_api_enabled {
         return Response::builder().status(StatusCode::FORBIDDEN).body(Body::from("Config API is disabled !\n")).unwrap();
     }
-    if let Some(s) = headers.get("x-api-key").and_then(|v| v.to_str().ok()).or(params.get("key").map(|s| s.as_str())) {
-        if s.as_bytes().ct_eq(st.master_key.as_bytes()).into() {
-            let strcontent = content.as_str();
-            let parsed = serde_yml::from_str::<Config>(strcontent);
-            match parsed {
-                Ok(_) => {
-                    let _ = tokio::spawn(async move { apply_config(content.as_str(), st).await });
-                    return Response::builder().status(StatusCode::OK).body(Body::from("Accepted! Applying in background\n")).unwrap();
-                }
-                Err(err) => {
-                    error!("Failed to parse upstreams file: {}", err);
-                    return Response::builder().status(StatusCode::BAD_GATEWAY).body(Body::from(format!("Failed: {}\n", err))).unwrap();
-                }
+    // if let Some(s) = headers.get("x-api-key").and_then(|v| v.to_str().ok()).or(params.get("key").map(|s| s.as_str())) {
+    if key_authorization(&headers, &params, &st.master_key) {
+        let strcontent = content.as_str();
+        let parsed = serde_yml::from_str::<Config>(strcontent);
+        match parsed {
+            Ok(_) => {
+                let _ = tokio::spawn(async move { apply_config(content.as_str(), st).await });
+                return Response::builder().status(StatusCode::OK).body(Body::from("Accepted! Applying in background\n")).unwrap();
+            }
+            Err(err) => {
+                error!("Failed to parse upstreams file: {}", err);
+                return Response::builder().status(StatusCode::BAD_GATEWAY).body(Body::from(format!("Failed: {}\n", err))).unwrap();
             }
         }
     }
@@ -192,6 +201,85 @@ async fn status(State(st): State<AppState>, Query(params): Query<HashMap<String,
     }
     Response::builder()
         .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .body(Body::from(format!("Parameter mismatch")))
+        .body(Body::from(format!("{}", "Parameter mismatch")))
         .unwrap()
+}
+
+async fn acme_create(State(state): State<AppState>, Query(params): Query<HashMap<String, String>>, headers: HeaderMap) -> impl IntoResponse {
+    if !key_authorization(&headers, &params, &state.master_key) {
+        return Response::builder().status(StatusCode::FORBIDDEN).body(Body::from("Access Denied !\n")).unwrap();
+    }
+
+    let _ = match account::load_or_create(state.cert_creds.as_str()).await {
+        Ok(txt) => {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "text/plain")
+                .body(Body::from(txt))
+                .unwrap()
+        }
+        Err(e) => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from(format!("Failed to create account: {}", e)))
+                .unwrap()
+        }
+    };
+}
+async fn acme_order(
+    State(state): State<AppState>,
+    axum::extract::Path(domain): axum::extract::Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !key_authorization(&headers, &params, &state.master_key) {
+        return Response::builder().status(StatusCode::FORBIDDEN).body(Body::from("Access Denied !\n")).unwrap();
+    }
+
+    let domain_clean = domain.trim_matches('/');
+    let _ = match order::order(domain_clean, state.cert_creds.as_str(), state.certs_dir).await {
+        Ok(txt) => {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "text/plain")
+                .body(Body::from(txt))
+                .unwrap()
+        }
+        Err(e) => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from(format!("Failed to order a certificate: {}", e)))
+                .unwrap()
+        }
+    };
+}
+
+pub async fn http01_challenge(axum::extract::Path(token): axum::extract::Path<String>) -> impl IntoResponse {
+    if let Ok(challenges) = CHALLENGES.read() {
+        // for k in challenges.iter() {
+        //     println!("   ==> {} : {}", k.0, k.1);
+        // }
+
+        if let Some(key_authorization) = challenges.get(&token) {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "text/plain")
+                .body(Body::from(key_authorization.clone()))
+                .unwrap();
+        }
+    }
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header("Content-Type", "text/plain")
+        .body(Body::from("Not found"))
+        .unwrap()
+}
+
+fn key_authorization(headers: &HeaderMap, params: &HashMap<String, String>, masterkey: &str) -> bool {
+    if let Some(s) = headers.get("x-api-key").and_then(|v| v.to_str().ok()).or(params.get("key").map(|s| s.as_str())) {
+        if s.as_bytes().ct_eq(masterkey.as_bytes()).into() {
+            return true;
+        }
+    }
+    false
 }
