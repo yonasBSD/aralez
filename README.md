@@ -24,6 +24,7 @@ Built on Rust, on top of **Cloudflare’s Pingora engine**, **Aralez** delivers 
 - **Dynamic Config Reloads** — Upstreams can be updated live via API, no restart required.
 - **TLS Termination** — Built-in OpenSSL support.
     - **Automatic loading of certificates** — Automatically reads and loads certificates from a folder, without a restart.
+- **Let’s Encrypt Certificates** — Automatic ordering and renewal of SSL/TLS certificates via the HTTP-01 challenge
 - **Upstreams TLS detection** — Aralez will automatically detect if upstreams uses secure connection.
 - **Built in rate limiter** — Limit requests to server, by setting up upper limit for requests per seconds, per virtualhost.
     - **Global rate limiter** — Set rate limit for all virtualhosts.
@@ -52,7 +53,7 @@ Built on Rust, on top of **Cloudflare’s Pingora engine**, **Aralez** delivers 
 - 🔮 **Automatic GRPC Support:** Zero config, Requires `ssl` to proxy, gRPC handled seamlessly.
 - 🔮 **Upstreams Session Stickiness:** Enable/Disable Sticky sessions globally.
 - 🔐 **TLS Termination:** Fully supports TLS for upstreams and downstreams.
-- 🛡️ **Built-in Authentication** Basic Auth, JWT, API key.
+- 🛡️ **Built-in Authentication** Basic Auth, JWT, API key, Forward Auth.
 - 🧠 **Header Injection:** Global and per-route header configuration.
 - 🧪 **Health Checks:** Pluggable health check methods for upstreams.
 - 🛰️ **Remote Config Push:** Lightweight HTTP API to update configs from CI/CD or other systems.
@@ -62,12 +63,20 @@ Built on Rust, on top of **Cloudflare’s Pingora engine**, **Aralez** delivers 
 ## 📁 File Structure
 
 ```
-.
-├── main.yaml           # Main configuration loaded at startup
-├── upstreams.yaml      # Watched config with upstream mappings
-├── etc/
-│   ├── server.crt      # TLS certificate (required if using TLS)
-│   └── key.pem         # TLS private key
+
+├── autoconfigs                 # Automatically create directory fo non human managed files 
+│    ├── acme_credentials.json  # Credentials for loggind in to Let's Encrypt server. Automatically generated 
+│    └── domains.json           # Auto generated file, contains list of domains for certificates
+├── certificates
+│    ├── yourdomain.com.crt
+│    ├── yourdomain.com.key
+│    ├── otherdomain.com.crt
+│    └── otherdomain.com.key
+├── conf.d
+│    ├── yourdomain.yaml        # Split configuration file for yourdomain.com
+│    └── otherdomain.yaml       # Split configuration file for otherdomain.com
+├── main.yaml                   # Main configuration loaded at startup
+└── upstreams.yaml              # Watched config with upstream mappings
 ```
 
 ---
@@ -93,7 +102,7 @@ Built on Rust, on top of **Cloudflare’s Pingora engine**, **Aralez** delivers 
 | **config_tls_key_file**          | etc/key.pem                          | Private Key file path. Mandatory if proxy_address_tls is set, else optional                        |
 | **proxy_address_http**           | 0.0.0.0:6193                         | Aralez HTTP bind address                                                                           |
 | **proxy_address_tls**            | 0.0.0.0:6194                         | Aralez HTTPS bind address (Optional)                                                               |
-| **proxy_certificates**           | etc/certs/                           | The directory containing certificate and key files. In a format {NAME}.crt, {NAME}.key.            |
+| **proxy_configs**                | etc/                                 | The top directory of config files                                                                  |
 | **upstreams_conf**               | etc/upstreams.yaml                   | The location of upstreams file                                                                     |
 | **log_level**                    | info                                 | Log level , possible values : info, warn, error, debug, trace, off                                 |
 | **hc_method**                    | HEAD                                 | Healthcheck method (HEAD, GET, POST are supported) UPPERCASE                                       |
@@ -105,13 +114,13 @@ Built on Rust, on top of **Cloudflare’s Pingora engine**, **Aralez** delivers 
 
 ### 🌐 `upstreams.yaml`
 
-- `provider`: `file` or `consul`
+- `provider`: `file`, `consul` or `kubernetes`
 - File-based upstreams define:
     - Hostnames and routing paths
     - Backend servers (load-balanced)
     - Optional request headers, specific to this upstream
 - Global headers (e.g., CORS) apply to all proxied responses
-- Optional authentication (Basic, API Key, JWT)
+- Optional authentication (Basic, API Key, JWT, Forward)
 
 ---
 
